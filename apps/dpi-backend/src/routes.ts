@@ -7,7 +7,7 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { Conversation, Harness } from "@earendil-works/pi-durable";
-import { DEVICE_DOC_KINDS, type SessionRow, type Store } from "./store.js";
+import { DEVICE_DOC_KINDS, type DeviceStore, type SessionRow } from "./device-store.js";
 import { agentStream, deviceStream, sessionStream } from "./streams.js";
 import { openChannel } from "./sse.js";
 import { idempotent } from "./idempotency.js";
@@ -42,7 +42,7 @@ async function body(c: Context): Promise<any> {
 
 const waitMsOf = (value: unknown) => Math.min(Number(value ?? 0) || 0, MAX_WAIT_MS);
 
-export function v1(store: Store) {
+export function v1(store: DeviceStore) {
   const app = new Hono();
   const create = idempotent(store);
 

@@ -1,8 +1,8 @@
 // Replays the stored response for a repeated `Idempotency-Key` on create routes.
 import { createMiddleware } from "hono/factory";
-import type { Store } from "./store.js";
+import type { DeviceStore } from "./device-store.js";
 
-export function idempotent(store: Store) {
+export function idempotent(store: DeviceStore) {
   return createMiddleware(async (c, next) => {
     const key = c.req.header("idempotency-key");
     if (!key) return next();

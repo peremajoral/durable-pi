@@ -8,7 +8,7 @@
 import { watchEvents, type Conversation, type Harness } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Activity, DeviceTree, Frame, StreamScope } from "../../dpi-sdk/src/api.js";
-import { AGENT_DOC_KINDS, DEVICE_DOC_KINDS, type SessionRow, type Store } from "./store.js";
+import { AGENT_DOC_KINDS, DEVICE_DOC_KINDS, type DeviceStore, type SessionRow } from "./device-store.js";
 import { invalid } from "./errors.js";
 
 const MAX_BUFFER = 2_000_000;
@@ -150,7 +150,7 @@ export function diffActivity(prev: DeviceTree | undefined, next: DeviceTree): Ac
 
 // ---------------------------------------------------------------- device scope
 
-export function deviceStream(store: Store, req: SseRequest, res: SseResponse) {
+export function deviceStream(store: DeviceStore, req: SseRequest, res: SseResponse) {
   const docs = parseDocs(req.query.docs, DEVICE_DOC_KINDS);
   const sse = openSse(res, { kind: "device" });
   let previous: DeviceTree | undefined;
@@ -181,7 +181,7 @@ export function deviceStream(store: Store, req: SseRequest, res: SseResponse) {
 
 // ---------------------------------------------------------------- session scope
 
-export async function sessionStream(store: Store, row: SessionRow, res: SseResponse) {
+export async function sessionStream(store: DeviceStore, row: SessionRow, res: SseResponse) {
   const h = store.harness(row);
   const sse = openSse(res, { kind: "session", sessionId: row.id });
   const watch = await h.watchTaskGraph(ctx);
@@ -214,7 +214,7 @@ export async function sessionStream(store: Store, row: SessionRow, res: SseRespo
 // ---------------------------------------------------------------- agent scope
 
 export async function agentStream(
-  store: Store,
+  store: DeviceStore,
   target: { row: SessionRow; h: Harness; c: Conversation },
   req: SseRequest,
   res: SseResponse,

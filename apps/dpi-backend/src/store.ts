@@ -63,6 +63,7 @@ import { createPlayground, Workspace, type SpawnSession } from "./extensions.js"
 import { createJobs, JobRuns, JOB_DEFS, jobDef, resolveJobInput, type Jobs } from "./jobs.js";
 import { ADDON_INFO, createAddons, PROMPTS, PromptChecklist, type Addons } from "./addons.js";
 import { JOB_RUNS_DOC } from "../../dpi-sdk/src/jobs.js";
+import { AGENT_DOC_KINDS, DEVICE_DOC_KINDS, WORKSPACE_DOC, type SessionRow } from "./device-store.js";
 
 export const DURABLE_VERSION = "1.0.3";
 
@@ -78,15 +79,8 @@ export const WRITE_TOOLS = new Set([
   "start_session",
 ]);
 
-export type SessionRow = {
-  id: string;
-  name: string;
-  cwd: string;
-  dbPath: string;
-  createdAt: number;
-  model: string;
-  provider: string;
-};
+export type { SessionRow };
+export { AGENT_DOC_KINDS, DEVICE_DOC_KINDS, WORKSPACE_DOC };
 
 export interface StoreOptions {
   dataDir: string;
@@ -95,12 +89,11 @@ export interface StoreOptions {
   provider: "openrouter" | "faux" | "ollama";
 }
 
-/** Agent documents a client may read or stream, by kind. */
 /** apps/dpi-backend/src → the checkout root. */
 const CODE_DIR = resolve(import.meta.dirname, "../../..");
-const AGENT_DOCS = { [JOB_RUNS_DOC]: JobRuns, "demo.workspace": Workspace } as const;
-export const AGENT_DOC_KINDS = Object.keys(AGENT_DOCS);
-export const DEVICE_DOC_KINDS = ["app.shared-state"];
+/** Kind → document class. The kind names are device-store.ts's AGENT_DOC_KINDS, which is what the
+ *  router accepts: a document offered here but not listed there is unreachable. */
+const AGENT_DOCS = { [JOB_RUNS_DOC]: JobRuns, [WORKSPACE_DOC]: Workspace } as const;
 
 export function lockFile(path: string) {
   mkdirSync(dirname(path), { recursive: true });
