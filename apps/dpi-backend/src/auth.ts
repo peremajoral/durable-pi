@@ -14,20 +14,32 @@ const equal = (a: Uint8Array, b: Uint8Array) => {
   return diff === 0;
 };
 
+/** The token a request presents, or "" when it presents none. */
+export const presentedToken = (request: Request) => {
+  const header = request.headers.get("authorization") ?? "";
+  if (header.startsWith("Bearer ")) return header.slice(7).trim();
+  return (request.headers.get("x-dpi-token") ?? "").trim();
+};
+
+/** False for an empty token on either side, so a device with no DPI_TOKEN set stays shut. */
+export async function tokenMatches(presented: string, expected: string): Promise<boolean> {
+  if (!presented || !expected) return false;
+  return equal(await sha256(presented), await sha256(expected));
+}
+
+/** The one 401. A host that checks the token before booting its store answers exactly this. */
+export const unauthorized = () =>
+  new Response(JSON.stringify({ error: { code: "unauthorized", message: "Missing or invalid device token" } }), {
+    status: 401,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "WWW-Authenticate": 'Bearer realm="dpi"',
+    },
+  });
+
 export function bearerAuth(token: string) {
-  const expected = crypto.subtle.digest("SHA-256", encoder.encode(token));
   return createMiddleware(async (c, next) => {
-    const header = c.req.header("authorization") ?? "";
-    const presented = header.startsWith("Bearer ")
-      ? header.slice(7).trim()
-      : (c.req.header("x-dpi-token") ?? "").trim();
-    const ok = presented !== "" && equal(await sha256(presented), new Uint8Array(await expected));
-    if (!ok)
-      return c.json(
-        { error: { code: "unauthorized", message: "Missing or invalid device token" } },
-        401,
-        { "WWW-Authenticate": 'Bearer realm="dpi"' },
-      );
+    if (!(await tokenMatches(presentedToken(c.req.raw), token))) return unauthorized();
     await next();
   });
 }

@@ -29,11 +29,60 @@ export const AGENT_DOC_KINDS = [JOB_RUNS_DOC, WORKSPACE_DOC];
 export const DEVICE_DOC_KINDS = ["app.shared-state"];
 
 /**
- * What routes.ts and streams.ts need from a store, and nothing else: the method surface of the Node
- * store, plus the set of sessions it has open. Derived instead of hand-written, so a second store
- * (the Durable Object's) cannot drift from the first without a compile error. `import type` only:
- * nothing of store.ts reaches a Worker bundle through this file.
+ * What routes.ts, streams.ts and the idempotency middleware actually ask of a store. Picked from
+ * the Node store, so the signatures are the real ones, but listed by name, so a second store (the
+ * Durable Object's) answers only what is asked of it instead of all 62 methods a Store happens to
+ * have. Extending the router is a compile error until the name is added here. `opened` comes along
+ * because streams.ts reads it to tell a live session from a dead one.
  */
-export type DeviceStore = {
-  [K in keyof Store as Store[K] extends (...args: any[]) => any ? K : never]: Store[K];
-} & Pick<Store, "opened">;
+type RouterMethods =
+  | "deviceInfo"
+  | "tree"
+  | "browse"
+  | "deviceDoc"
+  | "create"
+  | "sessionSummary"
+  | "rename"
+  | "archive"
+  | "list"
+  | "preview"
+  | "resolveSession"
+  | "resolveAgent"
+  | "harness"
+  | "subscribe"
+  | "agents"
+  | "createAgent"
+  | "agentSummary"
+  | "agentDetail"
+  | "setAgentName"
+  | "entries"
+  | "activeEntries"
+  | "transcript"
+  | "inbox"
+  | "send"
+  | "settled"
+  | "withdraw"
+  | "abort"
+  | "fork"
+  | "configure"
+  | "extensionsOf"
+  | "setExtension"
+  | "compact"
+  | "reset"
+  | "agentDoc"
+  | "liveTasks"
+  | "tasks"
+  | "taskNode"
+  | "labelTasks"
+  | "abortTask"
+  | "inspect"
+  | "usage"
+  | "compactionOf"
+  | "setCompaction"
+  | "demoState"
+  | "startJob"
+  | "approveJob"
+  | "replay"
+  | "remember";
+
+export type DeviceStore = Pick<Store, RouterMethods> & Pick<Store, "opened">;
