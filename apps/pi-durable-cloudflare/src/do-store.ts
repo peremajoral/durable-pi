@@ -16,6 +16,7 @@ import {
   createModels,
   createRegistry,
   installFaux,
+  cloudflareWorkersAIProvider,
   fauxModels,
   lastAssistantText,
   messageText,
@@ -78,10 +79,21 @@ interface Env {
   DPI_TOKEN?: string;
   DPI_DEVICE_NAME?: string;
   DPI_MODEL?: string;
-  /** "faux" (default) or "ollama": the endpoint in DPI_OLLAMA_BASE_URL, OpenAI-compatible. */
+  /**
+   * "faux"        an echo double, the default (tests and offline demos)
+   * "workers-ai"  the models served by Cloudflare on Cloudflare's network. The right choice for a
+   *               deployed Worker: nothing outside Cloudflare is involved and no loopback is used.
+   * "ollama"      any OpenAI-compatible endpoint (DPI_OLLAMA_BASE_URL). Its default base URL is
+   *               loopback, so this only works under `wrangler dev`; a deployed Worker cannot
+   *               reach a machine of yours, which is why "workers-ai" exists.
+   */
   DPI_PROVIDER?: string;
   DPI_OLLAMA_BASE_URL?: string;
   OLLAMA_API_KEY?: string;
+  /** Workers AI: an API token with Workers AI access, and the account that token belongs to,
+   *  which is not the account id the device is deployed under. */
+  CLOUDFLARE_API_KEY?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
 }
 
 /** A task as pi-durable's task graph reports it, before it is mapped to the wire shape. */
@@ -254,13 +266,11 @@ export class DoStore implements DeviceStore {
     return created;
   }
 
-  /** The provider this device runs: the fake one by default, a real one when configured.
-   *
-   *  "ollama" is any OpenAI-compatible endpoint (DPI_OLLAMA_BASE_URL, local headroom by default).
-   *  A deployed Worker cannot reach a loopback URL, so this is the local `wrangler dev` path: a
-   *  deploy needs a provider Cloudflare itself can reach, and that is what DPI_PROVIDER selects. */
+  /** The provider this device runs: the fake one by default, Cloudflare's own models in a deploy. */
   async #installProvider(): Promise<void> {
-    if ((this.env.DPI_PROVIDER ?? "faux") !== "ollama") {
+    const chosen = this.env.DPI_PROVIDER ?? "faux";
+    if (chosen === "workers-ai") return this.#installWorkersAI();
+    if (chosen !== "ollama") {
       installFaux(this.models);
       return;
     }
@@ -279,6 +289,34 @@ export class DoStore implements DeviceStore {
       reasoning: !!m.reasoning,
       cost: { input: m.cost?.input ?? 0, output: m.cost?.output ?? 0 },
     }));
+  }
+
+  /** Workers AI: the model runs on Cloudflare's own network, so a deployed Durable Object reaches
+   *  it from anywhere, with nothing outside Cloudflare in the path. pi-ai resolves the token and the
+   *  account through the harness context, which reads process.env; nodejs_compat populates that from
+   *  the Worker's bindings, and this bridge keeps it true if a compat change ever stops doing so. */
+  async #installWorkersAI(): Promise<void> {
+    process.env.CLOUDFLARE_API_KEY ??= this.env.CLOUDFLARE_API_KEY;
+    process.env.CLOUDFLARE_ACCOUNT_ID ??= this.env.CLOUDFLARE_ACCOUNT_ID;
+    const provider = cloudflareWorkersAIProvider();
+    this.models.setProvider(provider);
+    this.#provider = "cloudflare-workers-ai";
+    this.#modelId = this.env.DPI_MODEL ?? "@cf/zai-org/glm-5.3-flash";
+    // pi-ai exposes no readable catalogue without a credential: getModels, getAllModels and
+    // getAvailable all answer empty from a Worker. So report the model this device actually runs,
+    // which is true, instead of an empty list, which would be a lie by omission.
+    this.#modelInfo = [
+      {
+        id: this.#modelId,
+        provider: this.#provider,
+        name: this.#modelId,
+        tier: "free",
+        icon: "cpu",
+        contextWindow: 0,
+        reasoning: false,
+        cost: { input: 0, output: 0 },
+      },
+    ];
   }
 
   /** Built once and kept as a promise: the DO's fetch awaits ready(), never a route. */

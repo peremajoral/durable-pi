@@ -23,4 +23,5 @@ export { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 export { createModels } from "@earendil-works/pi-ai/models";
 export { installFaux, fauxModels } from "./faux.js";
 export { ollamaModels, ollamaProvider } from "./ollama.js";
+export { cloudflareWorkersAIProvider } from "@earendil-works/pi-ai/providers/cloudflare-workers-ai";
 export { lastAssistantText, messageText, toMarkdown, toTranscript } from "../../dpi-sdk/src/transcript.js";
