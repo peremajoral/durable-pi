@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
+import { ollamaModels, ollamaProvider } from "../../../../dpi-backend/src/ollama.ts";
 import {
   Harness,
   configure,
@@ -47,15 +48,22 @@ export class Ops extends EventEmitter {
 
   static async open(store: WatchStore, voice: Voice) {
     const models = createModels();
-    const provider = openrouterProvider();
-    const catalog = provider.getModels();
-    if (!catalog.some((m) => m.id === config.model))
-      throw Error(`OpenRouter has no model ${config.model}`);
-    models.setProvider({
-      ...provider,
-      getModels: () =>
-        catalog.filter((m) => m.id === config.model || curatedModels.some((c) => c.id === m.id)),
-    });
+    if (config.provider === "ollama") {
+      const listed = await ollamaModels();
+      if (!listed.some((m) => m.id === config.model))
+        throw Error(`Ollama has no model ${config.model}: ${listed.map((m) => m.id).join(", ")}`);
+      models.setProvider(ollamaProvider(listed));
+    } else {
+      const provider = openrouterProvider();
+      const catalog = provider.getModels();
+      if (!catalog.some((m) => m.id === config.model))
+        throw Error(`OpenRouter has no model ${config.model}`);
+      models.setProvider({
+        ...provider,
+        getModels: () =>
+          catalog.filter((m) => m.id === config.model || curatedModels.some((c) => c.id === m.id)),
+      });
+    }
     let ops: Ops | undefined;
     const extensions = createExtensions({
       store,
@@ -92,7 +100,7 @@ export class Ops extends EventEmitter {
       );
       const root = await harness.root(ctx, {
         agent: {
-          model: { provider: "openrouter", modelId: config.model },
+          model: { provider: config.provider, modelId: config.model },
           thinkingLevel: config.thinking,
           extensions: [extensions.OpsTools, extensions.Desk],
           cwd: repoDir,
@@ -140,7 +148,7 @@ export class Ops extends EventEmitter {
       const branch = `incident/${slug}`;
       const conversation = await tx.createConversation({ ownership: { kind: "ownerless" } });
       await configure(tx, conversation.id, {
-        model: { provider: "openrouter", modelId: config.model },
+        model: { provider: config.provider, modelId: config.model },
         thinkingLevel: config.thinking,
         extensions: [CodingTools, this.extensions.OpsTools, this.extensions.IncidentAgent],
         cwd: worktree,
@@ -246,6 +254,15 @@ Your worktree ${incident.worktree} is checkout-api on branch ${incident.branch},
   }
 
   modelList() {
+    if (config.provider === "ollama")
+      return this.models.getModels("ollama").map((m) => ({
+        id: m.id,
+        provider: "ollama",
+        name: m.name,
+        tier: "L",
+        icon: "lab.png",
+        contextWindow: m.contextWindow,
+      }));
     return curatedModels.flatMap((c) => {
       const m = this.models.getModel("openrouter", c.id);
       return m
@@ -284,7 +301,7 @@ Your worktree ${incident.worktree} is checkout-api on branch ${incident.branch},
         };
       case "configure": {
         const model = body.model as ModelRef | undefined;
-        if (model && (model.provider !== "openrouter" || !this.models.getModel("openrouter", model.modelId)))
+        if (model && (model.provider !== config.provider || !this.models.getModel(config.provider, model.modelId)))
           throw Error("Choose a model from the list");
         if (body.thinkingLevel !== undefined && !THINKING.includes(String(body.thinkingLevel)))
           throw Error("Invalid thinking level");

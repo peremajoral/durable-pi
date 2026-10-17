@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { projectEnvPath } from "../../../shared/paths.ts";
 
-// OPENROUTER_API_KEY and ELEVENLABS_API_KEY live in the project root .env.
+// OPENROUTER_API_KEY (or DPI_PROVIDER=ollama) and ELEVENLABS_API_KEY live in the project root .env.
 if (existsSync(projectEnvPath)) process.loadEnvFile(projectEnvPath);
 
 const args = process.argv.slice(2);
@@ -20,7 +20,12 @@ export const config = {
   /** Loopback by default: the UI has no login and the incident agent runs bash. Pass --host 0.0.0.0 for a LAN. */
   host: option("--host", "127.0.0.1"),
   dev: args.includes("--dev"),
-  model: option("--model", "anthropic/claude-sonnet-5.5"),
+  /** openrouter, or ollama: any OpenAI-compatible endpoint (DPI_OLLAMA_BASE_URL, default headroom on :8787). */
+  provider: option("--provider", process.env.DPI_PROVIDER ?? "openrouter") as "openrouter" | "ollama",
+  model: option(
+    "--model",
+    process.env.DPI_PROVIDER === "ollama" ? (process.env.DPI_OLLAMA_MODEL ?? "glm-5.3:cloud") : "anthropic/claude-sonnet-5.5",
+  ),
   thinking: option("--thinking", "high") as "off" | "minimal" | "low" | "medium" | "high" | "xhigh",
   /** Incident verdicts sharing one fingerprint inside the window that open an incident. */
   incidentThreshold: Number(option("--incident-threshold", "3")),

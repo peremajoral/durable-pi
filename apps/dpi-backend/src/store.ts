@@ -41,6 +41,8 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { curatedModels, defaultModelId } from "./model-catalog.js";
 import { fauxModels, installFaux } from "./faux.js";
+import { ollamaModels, ollamaProvider } from "./ollama.js";
+import type { Model } from "@earendil-works/pi-ai";
 import {
   Harness,
   createRegistry,
@@ -90,7 +92,7 @@ export interface StoreOptions {
   dataDir: string;
   startDirs: string[];
   name: string;
-  provider: "openrouter" | "faux";
+  provider: "openrouter" | "faux" | "ollama";
 }
 
 /** Agent documents a client may read or stream, by kind. */
@@ -176,8 +178,12 @@ export class Store {
     return this.options.startDirs;
   }
 
-  private constructor(readonly options: StoreOptions) {
+  private constructor(
+    readonly options: StoreOptions,
+    private readonly ollama: Model<"openai-completions">[] = [],
+  ) {
     if (options.provider === "faux") installFaux(this.models);
+    else if (options.provider === "ollama") this.models.setProvider(ollamaProvider(ollama));
     else {
       const provider = openrouterProvider();
       const catalog = provider.getModels();
@@ -207,7 +213,9 @@ export class Store {
   }
 
   static async open(options: StoreOptions) {
-    const store = new Store({ ...options, dataDir: resolve(options.dataDir) });
+    const ollama = options.provider === "ollama" ? await ollamaModels() : [];
+    if (options.provider === "ollama" && !ollama.length) throw Error("Ollama lists no chat models");
+    const store = new Store({ ...options, dataDir: resolve(options.dataDir) }, ollama);
     // Start dirs are where new sessions begin; create any that do not exist yet.
     await Promise.all(options.startDirs.map((dir) => mkdir(dir, { recursive: true }).catch(() => {})));
     try {
@@ -264,6 +272,8 @@ export class Store {
   }
 
   private defaultModel() {
+    if (this.options.provider === "ollama")
+      return this.ollama.find((m) => m.id === process.env.DPI_OLLAMA_MODEL)?.id ?? this.ollama[0].id;
     return this.options.provider === "faux" ? fauxModels[0].id : defaultModelId;
   }
 
@@ -277,6 +287,17 @@ export class Store {
         icon: "lab.png",
         contextWindow: 128000,
         reasoning: false,
+        cost: { input: 0, output: 0 },
+      }));
+    if (this.options.provider === "ollama")
+      return this.ollama.map((m) => ({
+        id: m.id,
+        provider: "ollama",
+        name: m.name,
+        tier: "L",
+        icon: "lab.png",
+        contextWindow: m.contextWindow,
+        reasoning: m.reasoning,
         cost: { input: 0, output: 0 },
       }));
     const available = await this.models.getAvailable("openrouter", { signal: AbortSignal.timeout(10000) });
@@ -304,6 +325,10 @@ export class Store {
       const id = fauxModels.some((m) => m.id === model?.modelId) ? model!.modelId : fauxModels[0].id;
       return { provider: "faux", modelId: id };
     }
+    if (this.options.provider === "ollama") {
+      const id = this.ollama.some((m) => m.id === model?.modelId) ? model!.modelId : this.defaultModel();
+      return { provider: "ollama", modelId: id };
+    }
     const exact = model?.provider === "openrouter" ? model.modelId : `${model?.provider}/${model?.modelId}`;
     return {
       provider: "openrouter",
@@ -318,7 +343,9 @@ export class Store {
     const known =
       this.options.provider === "faux"
         ? m.provider === "faux" && fauxModels.some((f) => f.id === m.modelId)
-        : m.provider === "openrouter" &&
+        : this.options.provider === "ollama"
+          ? m.provider === "ollama" && this.ollama.some((o) => o.id === m.modelId)
+          : m.provider === "openrouter" &&
           curatedModels.some((c) => c.id === m.modelId) &&
           !!this.models.getModel(m.provider, m.modelId);
     if (!known) throw invalid(`Unknown model ${m.provider}/${m.modelId}. Choose one from GET /v1/device models`);

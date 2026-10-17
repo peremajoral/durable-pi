@@ -4,10 +4,15 @@ dpi-network.yaml
 .env.*
 !.env.example
 **/backend.env
+# wrangler local dev secrets (template: .dev.vars.example)
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
 
 # dependencies and builds
 node_modules/
 **/dist/
+**/.wrangler/
 .venv/
 __pycache__/
 
@@ -30,3 +35,6 @@ test-results/
 tmp/
 *.log
 .DS_Store
+
+# codegraph index (local, regenerable)
+.codegraph/

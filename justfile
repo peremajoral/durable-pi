@@ -21,6 +21,12 @@ mod test 'just/test'
 # Proactive DPI demo: just proactive <command>
 mod proactive 'just/proactive'
 
+# The 32 pi-durable examples, run against the published packages
+mod examples 'just/examples'
+
+# Durable Pi harness in a Cloudflare Durable Object
+mod cloudflare 'just/cloudflare'
+
 # List command groups
 default:
     @just --list
@@ -31,6 +37,8 @@ install:
     cd apps/dpi-backend && npm install --no-audit --no-fund
     cd apps/dpi-playground && npm install --no-audit --no-fund
     cd apps/dpi-tui && npm install --no-audit --no-fund
+    cd apps/pi-durable-examples && npm install --no-audit --no-fund
+    cd apps/pi-durable-cloudflare && npm install --no-audit --no-fund
 
 # Type checks and unit tests, every app
 check: test::unit

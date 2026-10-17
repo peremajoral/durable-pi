@@ -1,0 +1,16 @@
+{
+  "name": "pi-durable-examples",
+  "private": true,
+  "type": "module",
+  "description": "The 32 upstream pi-durable examples, run against the published npm packages",
+  "dependencies": {
+    "@earendil-works/chord": "1.3.0",
+    "@earendil-works/pi-ai": "1.3.0",
+    "@earendil-works/pi-durable": "1.3.0",
+    "tsx": "^4.20.0"
+  },
+  "scripts": {
+    "run": "node _run.mjs",
+    "fetch": "node fetch-examples.mjs"
+  }
+}
