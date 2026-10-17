@@ -22,4 +22,5 @@ export { openDurableObjectSqliteStorage } from "@earendil-works/pi-durable/stora
 export { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 export { createModels } from "@earendil-works/pi-ai/models";
 export { installFaux, fauxModels } from "./faux.js";
+export { ollamaModels, ollamaProvider } from "./ollama.js";
 export { lastAssistantText, messageText, toMarkdown, toTranscript } from "../../dpi-sdk/src/transcript.js";

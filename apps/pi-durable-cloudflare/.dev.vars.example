@@ -1,1 +1,11 @@
-DPI_TOKEN=your-token-here
+# Copy to .dev.vars (gitignored) for local `wrangler dev`. A deploy sets these as secrets:
+#   npx wrangler secret put DPI_TOKEN
+# Never commit a real token.
+DPI_TOKEN=replace-me
+
+# The model this device runs:
+#   faux   a deterministic echo, for tests and offline demos (default)
+#   ollama any OpenAI-compatible endpoint, which is a real model
+DPI_PROVIDER=faux
+# DPI_OLLAMA_BASE_URL=http://127.0.0.1:8787/v1
+# DPI_MODEL=glm-5.3-flash:cloud

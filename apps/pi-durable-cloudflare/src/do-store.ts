@@ -15,10 +15,12 @@ import {
   InboxDoc,
   createModels,
   createRegistry,
-  fauxModels,
   installFaux,
+  fauxModels,
   lastAssistantText,
   messageText,
+  ollamaModels,
+  ollamaProvider,
   openDurableObjectSqliteStorage,
   toMarkdown,
   toTranscript,
@@ -76,6 +78,10 @@ interface Env {
   DPI_TOKEN?: string;
   DPI_DEVICE_NAME?: string;
   DPI_MODEL?: string;
+  /** "faux" (default) or "ollama": the endpoint in DPI_OLLAMA_BASE_URL, OpenAI-compatible. */
+  DPI_PROVIDER?: string;
+  DPI_OLLAMA_BASE_URL?: string;
+  OLLAMA_API_KEY?: string;
 }
 
 /** A task as pi-durable's task graph reports it, before it is mapped to the wire shape. */
@@ -96,6 +102,11 @@ export class DoStore implements DeviceStore {
   readonly startedAt = Date.now();
   /** The provider, set once: a faux handle that re-arms is what makes a second turn possible. */
   readonly models = createModels();
+
+  /** What this device actually runs, decided in #installProvider and reported everywhere. */
+  #provider: string = PROVIDER;
+  #modelId: string = MODEL_ID;
+  #modelInfo?: ModelInfo[];
 
   #sql: SqlStorage;
   #name: string;
@@ -154,7 +165,7 @@ export class DoStore implements DeviceStore {
 
   // ------------------------------------------------------------ device
 
-  #modelList(): ModelInfo[] {
+  #fauxModelList(): ModelInfo[] {
     return fauxModels.map((m) => ({
       id: m.id,
       provider: PROVIDER,
@@ -177,8 +188,8 @@ export class DoStore implements DeviceStore {
       durableVersion: DEVICE_VERSION,
       startedAt: this.startedAt,
       startDirs: ["/"],
-      models: this.#modelList(),
-      defaultModel: MODEL_ID,
+      models: this.#modelInfo ?? this.#fauxModelList(),
+      defaultModel: this.#modelId,
       storage: {
         dataDir: "durable-object-sqlite",
         catalogPath: "durable-object-sqlite",
@@ -213,13 +224,8 @@ export class DoStore implements DeviceStore {
     this.#catalog();
     const existing = this.list()[0];
     if (existing) {
-      // A session created before this device had a model keeps an empty one, which reads as
-      // "faux/" everywhere. Repair it here rather than leaving a broken summary in the catalog.
-      if (!existing.model) {
-        this.#sql.exec("UPDATE sessions SET model=?,provider=? WHERE id=?", MODEL_ID, PROVIDER, existing.id);
-        existing.model = MODEL_ID;
-        existing.provider = PROVIDER;
-      }
+      // Its model is made to match this device's provider in #open, which is also where the choice
+      // is made: creating a row here cannot know it yet.
       this.#session = existing;
       await this.#open(existing);
       return existing;
@@ -248,10 +254,37 @@ export class DoStore implements DeviceStore {
     return created;
   }
 
+  /** The provider this device runs: the fake one by default, a real one when configured.
+   *
+   *  "ollama" is any OpenAI-compatible endpoint (DPI_OLLAMA_BASE_URL, local headroom by default).
+   *  A deployed Worker cannot reach a loopback URL, so this is the local `wrangler dev` path: a
+   *  deploy needs a provider Cloudflare itself can reach, and that is what DPI_PROVIDER selects. */
+  async #installProvider(): Promise<void> {
+    if ((this.env.DPI_PROVIDER ?? "faux") !== "ollama") {
+      installFaux(this.models);
+      return;
+    }
+    const models = await ollamaModels();
+    if (!models.length) throw unavailable("The ollama endpoint this device was pointed at listed no models");
+    this.models.setProvider(ollamaProvider(models));
+    this.#provider = "ollama";
+    this.#modelId = models.some((m) => m.id === this.env.DPI_MODEL) ? this.env.DPI_MODEL! : models[0].id;
+    this.#modelInfo = models.map((m) => ({
+      id: m.id,
+      provider: this.#provider,
+      name: m.name,
+      tier: "local",
+      icon: "cpu",
+      contextWindow: m.contextWindow ?? 0,
+      reasoning: !!m.reasoning,
+      cost: { input: m.cost?.input ?? 0, output: m.cost?.output ?? 0 },
+    }));
+  }
+
   /** Built once and kept as a promise: the DO's fetch awaits ready(), never a route. */
   #open(row: SessionRow): Promise<Harness> {
     this.#harness ??= (async () => {
-      installFaux(this.models);
+      await this.#installProvider();
       const storage = await openDurableObjectSqliteStorage(this.ctx.storage as never);
       const harness = await HarnessClass.open(
         storage,
@@ -262,14 +295,19 @@ export class DoStore implements DeviceStore {
         },
         agentCtx,
       );
-      const root = await harness.root(agentCtx, {
-        agent: { model: { provider: PROVIDER, modelId: MODEL_ID }, thinkingLevel: "off" },
-      });
-      // A conversation created before this device had a model keeps none, and then every submission
-      // settles `unanswered: no_model`. Repair it here rather than reporting a device that answers
-      // nothing while looking healthy.
-      if (!(await root.agent(agentCtx)).model)
-        await root.configure({ model: { provider: PROVIDER, modelId: MODEL_ID } }, agentCtx);
+      const spec = { provider: this.#provider, modelId: this.#modelId };
+      const root = await harness.root(agentCtx, { agent: { model: spec, thinkingLevel: "off" } });
+      // A conversation created under a different provider keeps that model, and a submission then
+      // settles `unanswered: no_model` or quietly runs the model this device no longer uses.
+      const current = (await root.agent(agentCtx)).model;
+      if (current?.provider !== spec.provider || current?.modelId !== spec.modelId)
+        await root.configure({ model: spec }, agentCtx);
+      // The catalog row is what the tree and every session summary report: keep it in step.
+      if (row.model !== this.#modelId || row.provider !== this.#provider) {
+        this.#sql.exec("UPDATE sessions SET model=?,provider=? WHERE id=?", this.#modelId, this.#provider, row.id);
+        row.model = this.#modelId;
+        row.provider = this.#provider;
+      }
       this.opened.set(row.id, { harness, root });
       harness.resume();
       return harness;
