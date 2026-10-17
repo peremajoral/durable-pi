@@ -28,6 +28,19 @@ export const AGENT_DOC_KINDS = [JOB_RUNS_DOC, WORKSPACE_DOC];
 /** Device documents a client may read or stream, by kind. */
 export const DEVICE_DOC_KINDS = ["app.shared-state"];
 
+/** Tools that create, update or delete: shell, files, App State, job runs, subagents. A `writes:`
+ *  flag on an agent's tools and the read-only filter both read this, on either host. */
+export const WRITE_TOOLS = new Set([
+  "bash",
+  "write",
+  "edit",
+  "update_state",
+  "run_durable_job",
+  "ping_on_call_engineer",
+  "subagent",
+  "start_session",
+]);
+
 /**
  * What routes.ts, streams.ts and the idempotency middleware actually ask of a store. Picked from
  * the Node store, so the signatures are the real ones, but listed by name, so a second store (the

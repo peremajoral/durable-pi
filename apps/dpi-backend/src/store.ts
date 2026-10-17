@@ -63,21 +63,12 @@ import { createPlayground, Workspace, type SpawnSession } from "./extensions.js"
 import { createJobs, JobRuns, JOB_DEFS, jobDef, resolveJobInput, type Jobs } from "./jobs.js";
 import { ADDON_INFO, createAddons, PROMPTS, PromptChecklist, type Addons } from "./addons.js";
 import { JOB_RUNS_DOC } from "../../dpi-sdk/src/jobs.js";
-import { AGENT_DOC_KINDS, DEVICE_DOC_KINDS, WORKSPACE_DOC, type SessionRow } from "./device-store.js";
+import { AGENT_DOC_KINDS, DEVICE_DOC_KINDS, WORKSPACE_DOC, WRITE_TOOLS, type SessionRow } from "./device-store.js";
 
 export const DURABLE_VERSION = "1.0.3";
 
 /** Tools that create, update or delete: shell, files, App State, job runs, sessions, pages and subagents. */
-export const WRITE_TOOLS = new Set([
-  "bash",
-  "write",
-  "edit",
-  "update_state",
-  "run_durable_job",
-  "ping_on_call_engineer",
-  "subagent",
-  "start_session",
-]);
+export { WRITE_TOOLS };
 
 export type { SessionRow };
 export { AGENT_DOC_KINDS, DEVICE_DOC_KINDS, WORKSPACE_DOC };

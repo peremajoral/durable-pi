@@ -6,9 +6,20 @@
 // apps/pi-durable-cloudflare would bundle two copies of the library: the store would build a
 // harness with one copy and streams.ts would hand it to the other, which answers "Not a Harness".
 //
-// A host therefore never imports pi-durable itself. It takes everything it needs to open a harness
-// from here, so both sides of that check are the same module instance.
-export { Harness, createRegistry } from "@earendil-works/pi-durable";
+// A host therefore never imports pi-durable itself. It takes everything it needs from here - the
+// harness, the documents it reads, the models it runs, the provider, the transcript helpers - so
+// every object it builds comes from the same module instance the router checks. Type-only imports
+// are safe anywhere: they are erased, they are not a second copy.
+export { Harness, InboxDoc, createRegistry } from "@earendil-works/pi-durable";
+export type {
+  Conversation,
+  ConversationId,
+  ConversationRecord,
+  TaskId,
+  SubmissionId,
+} from "@earendil-works/pi-durable";
 export { openDurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
-export { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-export { createModels } from "@earendil-works/pi-ai";
+export { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
+export { createModels } from "@earendil-works/pi-ai/models";
+export { installFaux, fauxModels } from "./faux.js";
+export { lastAssistantText, messageText, toMarkdown, toTranscript } from "../../dpi-sdk/src/transcript.js";
