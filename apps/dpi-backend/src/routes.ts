@@ -1,182 +1,203 @@
 // REST v1. Every route requires the device token (see auth.ts). Session refs are a UUID or a
 // unique name; agent refs are a numeric id, `main`, or a unique name.
-import { Router, type Request, type Response, type NextFunction } from "express";
+//
+// Hono, not express: this router is meant to be mounted unchanged on a Node server and inside a
+// Cloudflare Durable Object, so it may not reach for a Node-only framework. Bodies, status codes
+// and the error shape are the ones apps/dpi-backend/API.md documents.
+import { Hono } from "hono";
+import type { Context } from "hono";
 import type { Conversation, Harness } from "@earendil-works/pi-durable";
 import { DEVICE_DOC_KINDS, type SessionRow, type Store } from "./store.js";
 import { agentStream, deviceStream, sessionStream } from "./streams.js";
+import { openChannel } from "./sse.js";
 import { idempotent } from "./idempotency.js";
 import { invalid } from "./errors.js";
 
-type Async = (req: Request, res: Response) => Promise<unknown>;
-const route = (fn: Async) => (req: Request, res: Response, next: NextFunction) => fn(req, res).catch(next);
+const MAX_BODY = 256 * 1024;
+const MAX_WAIT_MS = 300_000;
 
-interface Locals {
-  row: SessionRow;
-  h: Harness;
-  c: Conversation;
-}
+/** A JSON Response, built here rather than through the framework, so both hosts answer alike. */
+const json = (body: unknown, status = 200, headers: Record<string, string> = {}): Response =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8", ...headers },
+  });
 
-const param = (req: Request, key: string) => String(req.params[key]);
 const int = (value: unknown, name: string) => {
   const n = Number(value);
   if (!Number.isSafeInteger(n)) throw invalid(`${name} must be an integer`);
   return n;
 };
 
+/** express.json() semantics: no body is {}, malformed JSON is a 400 invalid, over the limit is too.
+ *  Untyped on purpose: the body is the wire boundary, exactly as `req.body` was. */
+async function body(c: Context): Promise<any> {
+  const length = Number(c.req.header("content-length") ?? 0);
+  if (Number.isFinite(length) && length > MAX_BODY) throw invalid("Body too large");
+  const text = await c.req.text();
+  if (!text.trim()) return {};
+  const parsed: unknown = JSON.parse(text);
+  return typeof parsed === "object" && parsed !== null ? parsed : {};
+}
+
+const waitMsOf = (value: unknown) => Math.min(Number(value ?? 0) || 0, MAX_WAIT_MS);
+
 export function v1(store: Store) {
-  const r = Router();
+  const app = new Hono();
   const create = idempotent(store);
 
-  // Resolve :s and :a once per request.
-  r.param("s", (req, res, next, value: string) => {
-    try {
-      const row = store.resolveSession(value);
-      res.locals.row = row;
-      next();
-    } catch (e) {
-      next(e);
-    }
-  });
-  r.param("a", (req, res, next, value: string) => {
-    store
-      .resolveAgent(param(req, "s"), value)
-      .then((resolved) => {
-        Object.assign(res.locals, resolved);
-        next();
-      })
-      .catch(next);
-  });
-  const L = (res: Response) => res.locals as Locals;
+  const rowOf = (c: Context): SessionRow => store.resolveSession(c.req.param("s") ?? "");
+  /** Resolve both refs once per request: the session row, the harness and the conversation. */
+  const targetOf = async (c: Context) => {
+    const row = rowOf(c);
+    const resolved = await store.resolveAgent(c.req.param("s") ?? "", c.req.param("a") ?? "");
+    return { row, h: resolved.h as Harness, conv: resolved.c as Conversation };
+  };
+  /** A stream route: the channel writes into a ReadableStream and the Response is built after. */
+  const stream = async (c: Context, run: (res: ReturnType<typeof openChannel>["res"]) => void | Promise<void>) => {
+    const channel = openChannel(c.req.raw.signal);
+    await run(channel.res);
+    return channel.response();
+  };
 
   // ---------------------------------------------------------- device
-  r.get("/device", (_req, res) => res.json(store.deviceInfo()));
-  r.get("/tree", route(async (_req, res) => res.json(await store.tree())));
-  r.get("/events", (req, res, next) => {
-    try {
-      deviceStream(store, req, res);
-    } catch (e) {
-      next(e);
-    }
+  app.get("/device", (c) => json(store.deviceInfo()));
+  app.get("/tree", async (c) => json(await store.tree()));
+  app.get("/events", (c) => stream(c, (res) => deviceStream(store, { query: c.req.query() }, res)));
+  app.get("/fs/dirs", async (c) => json(await store.browse(String(c.req.query("path") ?? ""))));
+  app.get("/docs/:kind", async (c) => {
+    const kind = c.req.param("kind");
+    if (!DEVICE_DOC_KINDS.includes(kind)) throw invalid(`Unknown device document ${kind}`);
+    return json({ kind, ...(await store.deviceDoc(kind)) });
   });
-  r.get("/fs/dirs", route(async (req, res) => res.json(await store.browse(String(req.query.path ?? "")))));
-  r.get(
-    "/docs/:kind",
-    route(async (req, res) => {
-      const kind = param(req, "kind");
-      if (!DEVICE_DOC_KINDS.includes(kind)) throw invalid(`Unknown device document ${kind}`);
-      res.json({ kind, ...(await store.deviceDoc(kind)) });
-    }),
-  );
 
   // ---------------------------------------------------------- sessions
-  r.get("/sessions", route(async (_req, res) => res.json((await store.tree()).sessions)));
-  r.post("/sessions", create, route(async (req, res) => res.status(201).json(await store.create(req.body ?? {}))));
-  r.get("/sessions/:s", route(async (_req, res) => res.json(await store.sessionSummary(L(res).row))));
-  r.patch("/sessions/:s", route(async (req, res) => res.json(await store.rename(L(res).row, req.body?.name))));
-  r.get("/sessions/:s/compaction", route(async (_req, res) => res.json(store.compactionOf(L(res).row.id))));
-  r.patch("/sessions/:s/compaction", route(async (req, res) => res.json(store.setCompaction(L(res).row, req.body ?? {}))));
-  r.delete("/sessions/:s", route(async (_req, res) => res.json(await store.archive(L(res).row))));
-  r.get("/sessions/:s/events", route(async (_req, res) => sessionStream(store, L(res).row, res)));
-  r.get(
-    "/sessions/:s/tasks",
-    route(async (req, res) => {
-      const status = String(req.query.status ?? "terminal");
-      if (!["live", "terminal"].includes(status)) throw invalid("status must be live or terminal");
-      const h = store.harness(L(res).row);
-      if (status === "live") return res.json(await store.liveTasks(h));
-      res.json(await store.tasks(h, status, Number(req.query.limit ?? 20)));
-    }),
+  app.get("/sessions", async () => json((await store.tree()).sessions));
+  app.post("/sessions", create, async (c) => json(await store.create(await body(c)), 201));
+  app.get("/sessions/:s", async (c) => json(await store.sessionSummary(rowOf(c))));
+  app.patch("/sessions/:s", async (c) => json(await store.rename(rowOf(c), (await body(c)).name)));
+  app.get("/sessions/:s/compaction", (c) => json(store.compactionOf(rowOf(c).id)));
+  app.patch("/sessions/:s/compaction", async (c) => json(store.setCompaction(rowOf(c), await body(c))));
+  app.delete("/sessions/:s", async (c) => json(await store.archive(rowOf(c))));
+  app.get("/sessions/:s/events", (c) => stream(c, (res) => sessionStream(store, rowOf(c), res)));
+  app.get("/sessions/:s/tasks", async (c) => {
+    const status = String(c.req.query("status") ?? "terminal");
+    if (!["live", "terminal"].includes(status)) throw invalid("status must be live or terminal");
+    const h = store.harness(rowOf(c));
+    if (status === "live") return json(await store.liveTasks(h));
+    return json(await store.tasks(h, status, Number(c.req.query("limit") ?? 20)));
+  });
+  app.post("/sessions/:s/tasks/:taskId/abort", async (c) =>
+    json(await store.abortTask(store.harness(rowOf(c)), int(c.req.param("taskId"), "taskId"))),
   );
-  r.post(
-    "/sessions/:s/tasks/:taskId/abort",
-    route(async (req, res) => res.json(await store.abortTask(store.harness(L(res).row), int(req.params.taskId, "taskId")))),
-  );
-  r.get("/sessions/:s/inspect", route(async (_req, res) => res.json(await store.inspect(store.harness(L(res).row)))));
-  r.get(
-    "/sessions/:s/submissions/:id",
-    route(async (req, res) => {
-      const closed = new AbortController();
-      res.on("close", () => closed.abort());
-      res.json(
-        await store.settled(
-          store.harness(L(res).row),
-          int(req.params.id, "submission id"),
-          Math.min(Number(req.query.waitMs ?? 0) || 0, 300_000),
-          closed.signal,
-        ),
-      );
-    }),
+  app.get("/sessions/:s/inspect", async (c) => json(await store.inspect(store.harness(rowOf(c)))));
+  app.get("/sessions/:s/submissions/:id", async (c) =>
+    json(
+      await store.settled(
+        store.harness(rowOf(c)),
+        int(c.req.param("id"), "submission id"),
+        waitMsOf(c.req.query("waitMs")),
+        c.req.raw.signal,
+      ),
+    ),
   );
 
   // ---------------------------------------------------------- agents
-  r.get("/sessions/:s/agents", route(async (_req, res) => res.json(await store.agents(L(res).row))));
-  r.post(
-    "/sessions/:s/agents",
-    create,
-    route(async (req, res) => res.status(201).json(await store.createAgent(L(res).row, req.body ?? {}))),
-  );
+  app.get("/sessions/:s/agents", async (c) => json(await store.agents(rowOf(c))));
+  app.post("/sessions/:s/agents", create, async (c) => json(await store.createAgent(rowOf(c), await body(c)), 201));
   const a = "/sessions/:s/agents/:a";
-  r.get(a, route(async (_req, res) => res.json(await store.agentDetail(L(res).row, L(res).c))));
-  r.patch(
-    a,
-    route(async (req, res) => {
-      store.setAgentName(L(res).row, L(res).c.id as number, req.body?.name);
-      res.json(await store.agentSummary(L(res).row, L(res).c));
-    }),
+  app.get(a, async (c) => {
+    const { row, conv } = await targetOf(c);
+    return json(await store.agentDetail(row, conv));
+  });
+  app.patch(a, async (c) => {
+    const { row, conv } = await targetOf(c);
+    store.setAgentName(row, conv.id as number, (await body(c)).name);
+    return json(await store.agentSummary(row, conv));
+  });
+  app.get(
+    `${a}/events`,
+    (c) =>
+      stream(c, async (res) => {
+        const { row, h, conv } = await targetOf(c);
+        return agentStream(store, { row, h, c: conv }, { query: c.req.query() }, res);
+      }),
   );
-  r.get(`${a}/events`, route(async (req, res) => agentStream(store, L(res), req, res)));
-  r.get(
-    `${a}/entries`,
-    route(async (req, res) => {
-      const scope = String(req.query.scope ?? "all");
-      if (scope === "active") return res.json({ items: await store.activeEntries(L(res).c) });
-      res.json(await store.entries(L(res).c, req.query.cursor as string | undefined, Number(req.query.limit ?? 500)));
-    }),
-  );
-  r.get(`${a}/transcript`, route(async (req, res) => res.json(await store.transcript(L(res).c, String(req.query.format ?? "json")))));
-  r.post(
-    `${a}/messages`,
-    route(async (req, res) => {
-      const { h, c } = L(res);
-      const submission = await store.send(c, req.body ?? {});
-      const waitMs = Number(req.body?.waitMs ?? 0) || 0;
-      if (!waitMs) return res.status(202).json({ submissionId: submission.id, status: "queued" });
-      const closed = new AbortController();
-      res.on("close", () => closed.abort());
-      const result = await store.settled(h, submission.id as number, waitMs, closed.signal);
-      res.status(result.status === "done" || result.status === "unanswered" ? 200 : 202).json(result);
-    }),
-  );
-  r.delete(
-    `${a}/inbox/:submissionId`,
-    route(async (req, res) => res.json(await store.withdraw(L(res).h, L(res).c, int(req.params.submissionId, "submissionId")))),
-  );
-  r.post(`${a}/abort`, route(async (req, res) => res.json(await store.abort(L(res).c, req.body?.background === true))));
-  r.post(`${a}/fork`, create, route(async (req, res) => res.status(201).json(await store.fork(L(res).row, L(res).c, req.body ?? {}))));
-  r.get(`${a}/config`, route(async (_req, res) => res.json((await store.agentDetail(L(res).row, L(res).c)).config)));
-  r.patch(`${a}/config`, route(async (req, res) => res.json(await store.configure(L(res).row, L(res).c, req.body ?? {}))));
-  r.get(`${a}/extensions`, route(async (_req, res) => res.json(await store.extensionsOf(L(res).row, L(res).c))));
-  r.patch(`${a}/extensions`, route(async (req, res) => res.json(await store.setExtension(L(res).row, L(res).c, req.body ?? {}))));
-  r.post(`${a}/compact`, route(async (req, res) => res.json(await store.compact(L(res).c, req.body?.instructions))));
-  r.post(`${a}/reset`, route(async (req, res) => res.json(await store.reset(L(res).c, req.body?.note))));
-  r.get(
-    `${a}/docs/:kind`,
-    route(async (req, res) => {
-      const kind = param(req, "kind");
-      res.json({ kind, value: await store.agentDoc(L(res).h, L(res).c, kind) });
-    }),
-  );
+  app.get(`${a}/entries`, async (c) => {
+    const { conv } = await targetOf(c);
+    if (String(c.req.query("scope") ?? "all") === "active")
+      return json({ items: await store.activeEntries(conv) });
+    return json(await store.entries(conv, c.req.query("cursor"), Number(c.req.query("limit") ?? 500)));
+  });
+  app.get(`${a}/transcript`, async (c) => {
+    const { conv } = await targetOf(c);
+    return json(await store.transcript(conv, String(c.req.query("format") ?? "json")));
+  });
+  app.post(`${a}/messages`, async (c) => {
+    const { h, conv } = await targetOf(c);
+    const input = await body(c);
+    const submission = await store.send(conv, input);
+    const waitMs = waitMsOf(input.waitMs);
+    if (!waitMs) return json({ submissionId: submission.id, status: "queued" }, 202);
+    const result = await store.settled(h, submission.id as number, waitMs, c.req.raw.signal);
+    const settled = result.status === "done" || result.status === "unanswered";
+    return json(result, settled ? 200 : 202);
+  });
+  app.delete(`${a}/inbox/:submissionId`, async (c) => {
+    const { h, conv } = await targetOf(c);
+    return json(await store.withdraw(h, conv, int(c.req.param("submissionId"), "submissionId")));
+  });
+  app.post(`${a}/abort`, async (c) => {
+    const { conv } = await targetOf(c);
+    return json(await store.abort(conv, (await body(c)).background === true));
+  });
+  app.post(`${a}/fork`, create, async (c) => {
+    const { row, conv } = await targetOf(c);
+    return json(await store.fork(row, conv, await body(c)), 201);
+  });
+  app.get(`${a}/config`, async (c) => {
+    const { row, conv } = await targetOf(c);
+    return json((await store.agentDetail(row, conv)).config);
+  });
+  app.patch(`${a}/config`, async (c) => {
+    const { row, conv } = await targetOf(c);
+    return json(await store.configure(row, conv, await body(c)));
+  });
+  app.get(`${a}/extensions`, async (c) => {
+    const { row, conv } = await targetOf(c);
+    return json(await store.extensionsOf(row, conv));
+  });
+  app.patch(`${a}/extensions`, async (c) => {
+    const { row, conv } = await targetOf(c);
+    return json(await store.setExtension(row, conv, await body(c)));
+  });
+  app.post(`${a}/compact`, async (c) => {
+    const { conv } = await targetOf(c);
+    return json(await store.compact(conv, (await body(c)).instructions));
+  });
+  app.post(`${a}/reset`, async (c) => {
+    const { conv } = await targetOf(c);
+    return json(await store.reset(conv, (await body(c)).note));
+  });
+  app.get(`${a}/docs/:kind`, async (c) => {
+    const { h, conv } = await targetOf(c);
+    const kind = c.req.param("kind");
+    return json({ kind, value: await store.agentDoc(h, conv, kind) });
+  });
 
   // ---------------------------------------------------------- demo extension
-  r.post(`${a}/demo/state`, route(async (req, res) => res.json(await store.demoState(L(res).c, req.body ?? {}))));
-  r.post(
-    `${a}/demo/jobs`,
-    route(async (req, res) => res.status(201).json(await store.startJob(L(res).row, L(res).h, L(res).c, req.body ?? {}))),
-  );
-  r.post(
-    `${a}/demo/jobs/:taskId/approval`,
-    route(async (req, res) => res.json(await store.approveJob(L(res).c, int(req.params.taskId, "taskId"), req.body?.approved))),
-  );
+  app.post(`${a}/demo/state`, async (c) => {
+    const { conv } = await targetOf(c);
+    return json(await store.demoState(conv, await body(c)));
+  });
+  app.post(`${a}/demo/jobs`, async (c) => {
+    const { row, h, conv } = await targetOf(c);
+    return json(await store.startJob(row, h, conv, await body(c)), 201);
+  });
+  app.post(`${a}/demo/jobs/:taskId/approval`, async (c) => {
+    const { conv } = await targetOf(c);
+    return json(await store.approveJob(conv, int(c.req.param("taskId"), "taskId"), (await body(c)).approved));
+  });
 
-  return r;
+  return app;
 }

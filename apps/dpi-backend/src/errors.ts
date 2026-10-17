@@ -1,4 +1,5 @@
-import type { ErrorRequestHandler } from "express";
+// Errors. One shape for every host: { error: { code, message } } with a status per code.
+// The mapping is host-independent, so the Cloudflare device answers the same codes as this one.
 import { ConversationBusy } from "@earendil-works/pi-durable";
 import type { ErrorCode } from "../../dpi-sdk/src/api.js";
 
@@ -28,19 +29,22 @@ export class ApiFault extends Error {
 export const invalid = (message: string) => new ApiFault("invalid", message);
 export const notFound = (message: string) => new ApiFault("not_found", message);
 
-export const errorMiddleware: ErrorRequestHandler = (err, req, res, _next) => {
-  let fault: ApiFault;
-  if (err instanceof ApiFault) fault = err;
-  else if (err instanceof ConversationBusy) fault = new ApiFault("busy", "The agent is busy and the input asked to be rejected while busy");
-  else if (err?.type === "entity.parse.failed") fault = invalid("Body must be valid JSON");
-  else if (err?.type === "entity.too.large") fault = invalid("Body too large");
-  else if (/App State changed while you were editing/.test(String(err?.message))) fault = new ApiFault("conflict", err.message);
-  else if (err instanceof Error && /^(Field|Invalid|Use a JSON Pointer|Increment|The state root|State path|Parent must|Value must|Reserved field|App State must|State is too)/.test(err.message))
-    fault = invalid(err.message);
-  else {
-    console.error(`[dpi-backend] ${req.method} ${req.path}:`, err instanceof Error ? err.stack : err);
-    fault = new ApiFault("internal", err instanceof Error ? err.message : "Internal error");
-  }
-  if (res.headersSent) return void res.end();
-  res.status(fault.status).json({ error: { code: fault.code, message: fault.message } });
-};
+/** Anything thrown on a request becomes an ApiFault, so no host leaks its own error shape. */
+export function toFault(err: unknown, where = ""): ApiFault {
+  if (err instanceof ApiFault) return err;
+  if (err instanceof ConversationBusy)
+    return new ApiFault("busy", "The agent is busy and the input asked to be rejected while busy");
+  if (err instanceof SyntaxError) return invalid("Body must be valid JSON");
+  const message = err instanceof Error ? err.message : String(err);
+  if (/App State changed while you were editing/.test(message)) return new ApiFault("conflict", message);
+  if (
+    /^(Field|Invalid|Use a JSON Pointer|Increment|The state root|State path|Parent must|Value must|Reserved field|App State must|State is too)/.test(
+      message,
+    )
+  )
+    return invalid(message);
+  console.error(`[dpi-backend] ${where}:`, err instanceof Error ? err.stack : err);
+  return new ApiFault("internal", message || "Internal error");
+}
+
+export const faultBody = (fault: ApiFault) => ({ error: { code: fault.code, message: fault.message } });

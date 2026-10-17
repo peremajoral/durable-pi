@@ -1,20 +1,23 @@
-import type { RequestHandler } from "express";
+// Replays the stored response for a repeated `Idempotency-Key` on create routes.
+import { createMiddleware } from "hono/factory";
 import type { Store } from "./store.js";
 
-/** Replays the stored response for a repeated `Idempotency-Key` on create routes. */
-export function idempotent(store: Store): RequestHandler {
-  return (req, res, next) => {
-    const key = req.get("idempotency-key");
+export function idempotent(store: Store) {
+  return createMiddleware(async (c, next) => {
+    const key = c.req.header("idempotency-key");
     if (!key) return next();
-    if (key.length > 128) return void res.status(400).json({ error: { code: "invalid", message: "Idempotency-Key too long" } });
-    const route = `${req.method} ${req.baseUrl}${req.path}`;
+    if (key.length > 128)
+      return c.json({ error: { code: "invalid", message: "Idempotency-Key too long" } }, 400);
+    // Same route identity the express version stored: method plus path, no query.
+    const route = `${c.req.method} ${c.req.path}`;
     const stored = store.replay(key, route);
-    if (stored) return void res.status(stored.status).set("Idempotent-Replay", "true").json(stored.body);
-    const json = res.json.bind(res);
-    res.json = (body: unknown) => {
-      if (res.statusCode < 400) store.remember(key, route, res.statusCode, body);
-      return json(body);
-    };
-    next();
-  };
+    if (stored) return c.json(stored.body, stored.status as 200, { "Idempotent-Replay": "true" });
+    await next();
+    if (c.res.status >= 400) return;
+    const body = await c.res
+      .clone()
+      .json()
+      .catch(() => undefined);
+    if (body !== undefined) store.remember(key, route, c.res.status, body);
+  });
 }

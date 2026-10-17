@@ -2,11 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
-import type { Response } from "express";
 import { DpiClient } from "../../dpi-sdk/src/client.js";
 import { AgentModel, SessionModel } from "../../dpi-sdk/src/models.js";
 import type { Frame } from "../../dpi-sdk/src/api.js";
-import { openSse } from "../src/streams.js";
+import { openSse, type SseResponse } from "../src/streams.js";
 import { bootServer, delay, faux, newToken, tempStore, until } from "./helpers.js";
 
 function collect(stream: AsyncGenerator<Frame>, sink: Frame[], onFrame?: (f: Frame) => void) {
@@ -143,7 +142,7 @@ test("openSse ends a slow viewer instead of buffering without bound", () => {
       ended = true;
     },
   };
-  const sse = openSse(res as unknown as Response, { kind: "device" });
+  const sse = openSse(res as unknown as SseResponse, { kind: "device" });
   assert.match(writes[0], /event: hello/);
   res.writableLength = 3_000_000;
   sse.send({ type: "activity", items: [] });
