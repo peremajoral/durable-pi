@@ -1,7 +1,10 @@
 // Server-Sent Event streams. Three scopes share one frame envelope (see dpi-sdk/src/api.ts):
 // device (tree + activity), session (agents, tasks, usage) and agent (pi-durable agent events).
 // Streams are viewers only: closing one never aborts work or closes a harness.
-import type { Request, Response } from "express";
+//
+// This file names no framework. It needs a response it can write a stream into, and that is the
+// whole interface: express's Response satisfies it today, a Cloudflare Durable Object's own writer
+// satisfies it too, which is what lets the same three streams serve both hosts.
 import { watchEvents, type Conversation, type Harness } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import type { Activity, DeviceTree, Frame, StreamScope } from "../../dpi-sdk/src/api.js";
@@ -10,6 +13,27 @@ import { invalid } from "./errors.js";
 
 const MAX_BUFFER = 2_000_000;
 
+/** The part of `res.status(code)` the streams use: chaining a header set. */
+export interface SseHeaders {
+  set(headers: Record<string, string>): unknown;
+}
+
+/** What an SSE stream needs from a response object, and nothing else. */
+export interface SseResponse {
+  status(code: number): SseHeaders;
+  flushHeaders(): void;
+  socket?: { setNoDelay(on: boolean): void } | null;
+  write(chunk: string): unknown;
+  end(): void;
+  on(event: "close", listener: () => void): unknown;
+  readonly writableLength: number;
+}
+
+/** What the streams read off a request: the `docs` query, nothing else. */
+export interface SseRequest {
+  query: { docs?: unknown };
+}
+
 export interface Sse {
   send(frame: Frame): void;
   readonly closed: boolean;
@@ -17,7 +41,7 @@ export interface Sse {
   sendIfChanged(key: string, frame: Frame): void;
 }
 
-export function openSse(res: Response, scope: StreamScope): Sse {
+export function openSse(res: SseResponse, scope: StreamScope): Sse {
   res.status(200).set({
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache, no-transform",
@@ -126,7 +150,7 @@ export function diffActivity(prev: DeviceTree | undefined, next: DeviceTree): Ac
 
 // ---------------------------------------------------------------- device scope
 
-export function deviceStream(store: Store, req: Request, res: Response) {
+export function deviceStream(store: Store, req: SseRequest, res: SseResponse) {
   const docs = parseDocs(req.query.docs, DEVICE_DOC_KINDS);
   const sse = openSse(res, { kind: "device" });
   let previous: DeviceTree | undefined;
@@ -157,7 +181,7 @@ export function deviceStream(store: Store, req: Request, res: Response) {
 
 // ---------------------------------------------------------------- session scope
 
-export async function sessionStream(store: Store, row: SessionRow, res: Response) {
+export async function sessionStream(store: Store, row: SessionRow, res: SseResponse) {
   const h = store.harness(row);
   const sse = openSse(res, { kind: "session", sessionId: row.id });
   const watch = await h.watchTaskGraph(ctx);
@@ -192,8 +216,8 @@ export async function sessionStream(store: Store, row: SessionRow, res: Response
 export async function agentStream(
   store: Store,
   target: { row: SessionRow; h: Harness; c: Conversation },
-  req: Request,
-  res: Response,
+  req: SseRequest,
+  res: SseResponse,
 ) {
   const { row, h, c } = target;
   const docs = parseDocs(req.query.docs, AGENT_DOC_KINDS);

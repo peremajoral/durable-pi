@@ -160,6 +160,14 @@ if (soloAgent) {
     soloAgent.send("say hi", "followUp", `fixture-${Date.now()}`, 60000),
   )) as { answer?: { entryId: number } } | undefined;
   entryId = settled?.answer?.entryId;
+} else {
+  // Always a row: a probe that disappears changes the denominator between backends and can
+  // hide a failure as an absence.
+  rows.push({
+    name: "POST .../agents/:id/messages (waited)",
+    ok: false,
+    detail: "skipped: the device answered no fork fixture agent",
+  });
 }
 await probe("POST .../agents/:a/fork", async () => {
   if (!soloAgent || entryId === undefined)
